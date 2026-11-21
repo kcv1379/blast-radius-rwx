@@ -1,4 +1,6 @@
 .git
-sample/
+__pycache__
+*.pyc
+*.zip
+sample
 output.jsonl
-__pycache__/

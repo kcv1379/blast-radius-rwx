@@ -1,0 +1,28 @@
+name: Validate Blast Radius sample
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download official sample (do not commit answers)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://www.joinbuilders.org/buildathon/tracks/blast-radius/files/blast-radius-sample.tar.gz' \
+            -o /tmp/blast-radius-sample.tar.gz
+          mkdir -p /tmp/blast-radius-starter
+          tar -xzf /tmp/blast-radius-sample.tar.gz -C /tmp/blast-radius-starter
+          cp -R /tmp/blast-radius-starter/sample ./sample
+          cp /tmp/blast-radius-starter/Makefile ./Makefile
+          cp /tmp/blast-radius-starter/score.py ./score.py
+      - name: Build Docker image and score sample
+        shell: bash
+        run: make sample

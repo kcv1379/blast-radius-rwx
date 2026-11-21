@@ -1,37 +1,23 @@
-# Blast Radius — RWX Buildathon 2026
+# RWX Blast Radius — Coverage-based CI test selection
 
-A lightweight, patch-aware test selector for the [RWX Blast Radius](https://www.joinbuilders.org/buildathon/tracks/blast-radius) track at the Builders Buildathon.
+This entry for the Builders Buildathon predicts tests impacted by a patch against pinned SQLGlot commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`.
 
 ## How it works
 
-- Reads the provided `/data/tests.json` and `/data/commits/*.patch` files.
-- Selects related tests using changed paths and diff content (dialects, optimizer, fixtures, and shared source modules).
-- Distributes selected tests among up to eight workers, minimizing the simulated critical-path time plus the 2-second overhead per worker.
-- Prints one JSON object per commit on stdout. No network or write access is required at runtime.
+1. **At image build (unscored)**, downloads the **fixed upstream SQLGlot source**, runs baseline tests under `coverage.py` while recording each test's execution context, and saves a compressed map of source lines to test numbers. Tests slower than 0.8 seconds baseline are omitted from instrumentation to keep the build fast; conservative rules select important slow tests at runtime.
+2. **At runtime (scored)**, parses each supplied unified diff and uses coverage of affected functions to select tests, with supplemental rules for imports, SQL dialects, SQL fixtures and shared optimizer code. It never reads sample answers.
+3. Chooses one to eight workers to minimize the exact official simulated latency cost (max duration plus 2 seconds per nonempty worker).
 
-## Docker submission
+The Dockerfile is at the repository root. No runtime network or filesystem writes are required.
 
-The Dockerfile is at the **repository root**, as required by the competition.
+## Validation
 
-```bash
-docker build --platform linux/amd64 -t blast-radius-entry .
-```
+**GitHub Actions automatically runs the official sample scorer on every push to `main`.** Open your repository's Actions tab and check that `Validate Blast Radius sample` passes and reports zero misses **before submitting your new commit**. The workflow downloads the official starter kit only in the CI runner, so sample answers are never committed. You can also run `make sample` locally after copying the original starter kit's `Makefile`, `score.py`, and `sample/` folder into this directory.
 
-The judging harness mounts `/data/tests.json` and `/data/commits/` read-only and runs the image's default command.
+An offline test of the **fallback rules with an empty coverage map** on all 30 known sample patches produced **172.265 simulated seconds with 0 misses**. That is **not** a verified result from the actual Docker image; the generated coverage map can change the selection and score. Do not submit without verifying the actual Docker build and sample run.
 
-## Sample result
+## Source constraints
 
-Using the original 30-commit sample dataset and the official local scorer:
+Only the pinned upstream SQLGlot commit, PyPI packages, and provided test metadata (`build_tests.json`) are used. No answer files, sample patch-to-failure lookups, or private data are included.
 
-- Simulated time: **176.892 seconds**
-- Missed commits: **0/30**
-
-This is a local sample result, not a leaderboard score. Server CPU usage is added, and the final evaluates unseen commits.
-
-## Dependencies
-
-Runtime: Python 3.13 standard library. Docker image is based on the pinned `python:3.13-slim` digest from the starter kit. No other Python packages or external runtime services are needed.
-
-## License
-
-MIT License. See `LICENSE`.
+MIT licensed.
