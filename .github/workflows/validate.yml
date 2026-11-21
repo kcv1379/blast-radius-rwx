@@ -1,0 +1,36 @@
+name: Validate Blast Radius sample
+
+# Builds the real image on linux/amd64 and scores the official sample with the official scorer.
+# The sample answers are downloaded in the runner only; they are never committed.
+on:
+  push:
+    branches: [main, 'ci/**']
+  workflow_dispatch:
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download official sample (do not commit answers)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            'https://www.joinbuilders.org/buildathon/tracks/blast-radius/files/blast-radius-sample.tar.gz' \
+            -o /tmp/blast-radius-sample.tar.gz
+          mkdir -p /tmp/blast-radius-starter
+          tar -xzf /tmp/blast-radius-sample.tar.gz -C /tmp/blast-radius-starter
+          cp -R /tmp/blast-radius-starter/sample ./sample
+      - name: Build image and score sample (official Makefile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          make sample | tee /tmp/sample.txt
+          echo "build+run seconds: $(( $(date +%s) - start ))"
+      - name: Require zero misses
+        shell: bash
+        run: |
+          grep -E '^Misses:\s+0 ' /tmp/sample.txt

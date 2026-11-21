@@ -163,6 +163,72 @@ def multiline_strings(path):
     return out
 
 
+def collect_names(tree):
+    """(targets, mentions): names assigned at module/class level, and (name, line) mentions of any
+    identifier (attribute, bare name, keyword, or a string constant that looks like one)."""
+    targets = set()
+    mentions = []
+
+    def scope(stmts, top):
+        for s in stmts:
+            if top and isinstance(s, (ast.Assign, ast.AnnAssign)):
+                tgts = s.targets if isinstance(s, ast.Assign) else [s.target]
+                for t in tgts:
+                    if isinstance(t, ast.Name):
+                        targets.add(t.id)
+            if isinstance(s, ast.ClassDef):
+                scope(s.body, top)
+            elif isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scope(s.body, False)
+            else:
+                for field in ('body', 'orelse', 'finalbody'):
+                    scope(getattr(s, field, None) or [], top)
+                for h in getattr(s, 'handlers', None) or []:
+                    scope(h.body, top)
+
+    scope(tree.body, True)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            mentions.append((node.attr, node.lineno))
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            mentions.append((node.id, node.lineno))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier():
+            mentions.append((node.value, node.lineno))
+        elif isinstance(node, ast.keyword) and node.arg:
+            mentions.append((node.arg, getattr(node.value, 'lineno', 0)))
+    return targets, mentions
+
+
+def outside_refs(ids, bit):
+    """Repo files outside sqlglot/ and tests/ (sqlglotc/setup.py, pyproject.toml, ...) and the tests
+    whose source mentions them by name: token -> mask of those tests."""
+    tokens = set()
+    for p in ROOT.rglob('*'):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(ROOT).as_posix()
+        if rel.startswith(('sqlglot/', 'tests/', '.git/')) or '/.git/' in rel:
+            continue
+        tokens.add(rel)
+        tokens.add(p.name)
+        tokens.add(rel.split('/')[0])
+    texts = {}
+    for p in (ROOT / 'tests').rglob('*.py'):
+        texts[p.relative_to(ROOT).as_posix()] = p.read_text('utf-8', errors='replace')
+    out = {}
+    for tok in tokens:
+        if len(tok) < 4:
+            continue
+        m = 0
+        for f, text in texts.items():
+            if tok in text:
+                prefix = f + '::'
+                m |= sum(bit[c] for c in ids if c.startswith(prefix))
+        if m:
+            out[tok] = m
+    return out
+
+
 def multiline_strings(path):  # noqa: F811  (supersedes the simpler version: handles f-strings on 3.12+)
     out = []
     fstack = []
@@ -214,6 +280,8 @@ def build_map():
     (OUT / 'files').mkdir(exist_ok=True)
 
     files = []
+    pending = []
+    all_targets = set()
     measured = {Path(f).resolve(): f for f in merged.measured_files()}
     for p in sorted(PKG.rglob('*.py')):
         rel = p.resolve().relative_to(ROOT).as_posix()
@@ -224,11 +292,29 @@ def build_map():
         except (SyntaxError, UnicodeDecodeError):
             continue
         units, classes = analyze(tree, raw, sets)
+        targets, mentions = collect_names(tree)
+        all_targets |= targets
         rec = {'u': units, 'c': classes, 's': multiline_strings(p), 'm': sets.add(modmask),
                'i': sorted(imp)}
         with gzip.open(OUT / 'files' / (rel.replace('/', '__') + '.json.gz'), 'wt') as f:
             json.dump(rec, f, separators=(',', ':'))
         files.append(rel)
+        pending.append((units, mentions, imp))
+
+    # which tests execute code that mentions each import-time-defined name (a flag, mapping, ...)?
+    name_mask, name_imp = {}, set()
+    for units, mentions, imp in pending:
+        by_line = {}
+        for u in units:
+            m = sets.items[u[5]]
+            for ln in range(u[0], u[1] + 1):
+                by_line[ln] = by_line.get(ln, 0) | m
+        for name, ln in mentions:
+            if name not in all_targets:
+                continue
+            if ln in imp:
+                name_imp.add(name)  # also read while modules/classes are being created
+            name_mask[name] = name_mask.get(name, 0) | by_line.get(ln, 0)
 
     # class usage and fixture reads, from the per-test facts recorded while the tests ran
     users, fixtures = {}, {}
@@ -256,6 +342,9 @@ def build_map():
         'fixtures': {k: sets.add(v) for k, v in fixtures.items()},
         'eager': eager_modules(),
         'files': sorted(files),
+        'pickle_files': sorted(r for r in files if r == 'sqlglot/serde.py' or any(k in (ROOT / r).read_text('utf-8', errors='replace') for k in ('__reduce__', '__getstate__', '__setstate__', 'copyreg'))),
+        'outside': {k: sets.add(v) for k, v in outside_refs(ids, bit).items()},
+        'names': {n: [sets.add(name_mask.get(n, 0)), 1 if n in name_imp else 0] for n in all_targets},
     }
     with gzip.open(OUT / 'global.json.gz', 'wt') as f:
         json.dump(gl, f, separators=(',', ':'))
@@ -269,11 +358,51 @@ def build_map():
         raise SystemExit('coverage map too sparse - refusing to continue')
 
 
+def build_fingerprint():
+    """Import-time state of the pristine package, from two differently seeded fresh interpreters;
+    keys that disagree (sqlglot itself is nondeterministic there) are dropped."""
+    snaps = []
+    for seed in ('1', '7', '13', '42', '99', '123', '2024', '31337', '5', '777'):
+        out = COV_DIR / f'fp_{seed}.json'
+        env = dict(os.environ, PYTHONHASHSEED=seed, BR_SRC=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
+        subprocess.run([sys.executable, str(HERE / 'fpr.py'), str(out)], cwd=ROOT, env=env, check=True,
+                       stderr=subprocess.DEVNULL)
+        snaps.append(json.loads(out.read_text()))
+    a = snaps[0]['snap']
+    stable, dropped = {}, {}
+    for mod, keys in a.items():
+        stable[mod] = {k: h for k, h in keys.items() if all(sn['snap'].get(mod, {}).get(k) == h for sn in snaps[1:])}
+        lost = [k for k in keys if k not in stable[mod]]
+        if lost:
+            dropped[mod] = lost
+    path = OUT / 'fingerprint.json.gz'
+    with gzip.open(path, 'wt') as f:
+        json.dump({'stable': stable, 'unstable': dropped, 'errors': snaps[0]['errors']}, f, separators=(',', ':'))
+    # calibrate against the exact run-time mechanism: whatever it reports on the pristine tree
+    # differs for environmental reasons (loggers, "unittest" in sys.modules, ...) and is dropped too
+    env = dict(os.environ, BR_SRC=str(ROOT), PYTHONDONTWRITEBYTECODE='1')
+    out = subprocess.run([sys.executable, str(HERE / 'xrun.py'), 'calibrate', str(path)], cwd=ROOT, env=env,
+                         capture_output=True, text=True).stdout
+    res = json.loads(out) if out.strip() not in ('', 'null') else None
+    if res is None:
+        raise SystemExit('fingerprint calibration failed')
+    for mod, key in res['changes']:
+        if mod in stable and key in stable[mod]:
+            del stable[mod][key]
+            dropped.setdefault(mod, []).append(key)
+    with gzip.open(path, 'wt') as f:
+        json.dump({'stable': stable, 'unstable': dropped, 'errors': snaps[0]['errors']}, f, separators=(',', ':'))
+    print(f'build_coverage: calibration dropped {len(res["changes"])} environment-dependent keys', flush=True)
+    print(f'build_coverage: fingerprint {sum(len(v) for v in stable.values())} stable keys, '
+          f'{sum(len(v) for v in dropped.values())} unstable dropped, import errors {snaps[0]["errors"]}', flush=True)
+
+
 def main():
     if os.environ.get('BR_SKIP_RUN') != '1':
         COV_DIR.mkdir(parents=True, exist_ok=True)
         run_tests()
     build_map()
+    build_fingerprint()
 
 
 if __name__ == '__main__':

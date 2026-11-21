@@ -12,10 +12,12 @@ COPY requirements.lock /app/requirements.lock
 RUN pip install --no-cache-dir --disable-pip-version-check -r /app/requirements.lock 'coverage==7.13.3'
 
 # Build-time only (unscored): run the suite once with per-test coverage and write /app/map.
-COPY cov_plugin.py build_coverage.py /app/
+COPY cov_plugin.py build_coverage.py fpr.py xrun.py patchlib.py /app/
 RUN BR_JOBS=4 python /app/build_coverage.py && rm -rf /tmp/brcov
+# Byte-compile the pinned tree now: the run-time filesystem is read-only, so nothing can be cached later.
+RUN python -m compileall -q /app/sqlglot
 
 # Runtime: stdlib only.
-COPY patchlib.py selector.py /app/
-RUN python -m compileall -q /app/patchlib.py /app/selector.py
+COPY selector.py /app/
+RUN python -m compileall -q /app/patchlib.py /app/selector.py /app/xrun.py /app/fpr.py
 CMD ["python", "/app/selector.py"]
