@@ -23,15 +23,20 @@ def parse(text):
             m = HUNK.match(line)
             if m:
                 hunk = (int(m.group(1)), int(m.group(2) if m.group(2) is not None else 1), [])
+                new_len = int(m.group(4) if m.group(4) is not None else 1)
+                left = [hunk[1], new_len]  # old / new lines still expected in this hunk
                 cur['hunks'].append(hunk)
         elif hunk is not None:
-            if line.startswith(('+', '-', ' ')):
+            if line[:1] == chr(92):
+                continue
+            if line == '' and left[0] > 0 and left[1] > 0:
+                line = ' '  # a blank context line whose leading space was stripped
+            if line.startswith((' ', '-', '+')) and (left[0] > 0 or left[1] > 0):
                 hunk[2].append(line)
-            elif line[:1] == chr(92):
-                continue
-            elif line == '':
-                hunk = None  # end of patch text (blank context lines keep their leading space)
-                continue
+                if line[0] != '+':
+                    left[0] -= 1
+                if line[0] != '-':
+                    left[1] -= 1
             else:
                 hunk = None
     return files
