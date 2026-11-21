@@ -3,4 +3,9 @@ __pycache__
 *.pyc
 *.zip
 sample
+tools
 output.jsonl
+Makefile
+score.py
+SCORING.md
+README.md
