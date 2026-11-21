@@ -476,7 +476,7 @@ def sched_cost(items):
     return (max(sum(ms[n] for n in b) for b in bins) + 2000 * len(bins)) / 1000.0
 
 
-GATE_K = float(os.environ.get('BR_GATE_K', '2.5'))      # CPU seconds per recorded second when run in one process
+GATE_K = float(os.environ.get('BR_GATE_K', '1.5'))      # CPU seconds per recorded second when run in one process
 GATE_RATIO = float(os.environ.get('BR_GATE_RATIO', '1.3'))
 
 
